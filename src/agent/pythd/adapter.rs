@@ -712,7 +712,7 @@ mod tests {
 
         // Send a Subscribe Price Sched message
         let account = "2wrWGm63xWubz7ue4iYR3qvBbaUJhZVi4eSpNuU8k8iF".to_string();
-        let (notify_price_sched_tx, mut notify_price_sched_rx) = mpsc::channel(1000);
+        let (notify_price_sched_tx, mut notify_price_sched_rx) = mpsc::channel(1);
         let (result_tx, result_rx) = oneshot::channel();
         test_adapter
             .message_tx

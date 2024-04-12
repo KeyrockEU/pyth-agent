@@ -12,7 +12,7 @@ rpc_url = "https://api.pythtest.pyth.network"
 wss_url = "wss://api.pythtest.pyth.network"
 
 # Path to your publishing keypair.
-key_store.publish_keypair_path = "/Users/juan-ignacio-marquez/Documents/publish_key_pair.json"
+key_store.publish_keypair_path = "/path/to/keypair.json"
 
 # Oracle program pubkey
 key_store.program_key = "8tfDNiaEyrV6Q1U4DEXrEigs9DoDtkugzFbybENEbCDz" # conformance
