@@ -134,7 +134,7 @@ pub fn spawn_exporter(
     network: Network,
     rpc_url: &str,
     rpc_timeout: Duration,
-    publisher_permissions_rx: flume::Receiver<HashMap<Pubkey, HashMap<Pubkey, WeeklySchedule>>>,
+    publisher_permissions_rx: mpsc::Receiver<HashMap<Pubkey, HashMap<Pubkey, MarketSchedule>>>,
     key_store: KeyStore,
     local_store_tx: Sender<store::local::Message>,
     global_store_tx: Sender<store::global::Lookup>,
@@ -222,10 +222,10 @@ pub struct Exporter {
     inflight_transactions_tx: Sender<Signature>,
 
     /// publisher => { permissioned_price => market hours } as read by the oracle module
-    publisher_permissions_rx: flume::Receiver<HashMap<Pubkey, HashMap<Pubkey, WeeklySchedule>>>,
+    publisher_permissions_rx: flume::Receiver<HashMap<Pubkey, HashMap<Pubkey, MarketSchedule>>>,
 
     /// Currently known permissioned prices of this publisher along with their market hours
-    our_prices: HashMap<Pubkey, WeeklySchedule>,
+    our_prices: HashMap<Pubkey, MarketSchedule>,
 
     /// Interval to update the dynamic price (if enabled)
     dynamic_compute_unit_price_update_interval: Interval,
@@ -436,13 +436,13 @@ impl Exporter {
             .into_iter()
             .filter(|(id, _data)| {
                 let key_from_id = Pubkey::from((*id).clone().to_bytes());
-                if let Some(weekly_schedule) = self.our_prices.get(&key_from_id) {
-                    let ret = weekly_schedule.can_publish_at(&now);
+                if let Some(schedule) = self.our_prices.get(&key_from_id) {
+                    let ret = schedule.can_publish_at(&now);
 
                     if !ret {
                         debug!(self.logger, "Exporter: Attempted to publish price outside market hours";
                             "price_account" => key_from_id.to_string(),
-                            "weekly_schedule" => format!("{:?}", weekly_schedule),
+                            "schedule" => format!("{:?}", schedule),
                             "utc_time" => now.format("%c").to_string(),
                         );
                     }
