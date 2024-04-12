@@ -216,8 +216,8 @@ pub mod rpc {
         notify_price_rx: mpsc::Receiver<NotifyPrice>,
 
         // Channel NotifyPriceSched events are sent and received on
-        notify_price_sched_tx: mpsc::Sender<NotifyPriceSched>,
-        notify_price_sched_rx: mpsc::Receiver<NotifyPriceSched>,
+        notify_price_sched_tx: mpsc::Sender<Vec<NotifyPriceSched>>,
+        notify_price_sched_rx: mpsc::Receiver<Vec<NotifyPriceSched>>,
 
         logger: Logger,
     }
@@ -296,7 +296,7 @@ pub mod rpc {
 
         async fn handle_notify_price_sched(
             &mut self,
-            notify_price_sched: NotifyPriceSched,
+            notify_price_sched: Vec<NotifyPriceSched>,
         ) -> Result<()> {
             self.send_notification(Method::NotifyPriceSched, Some(notify_price_sched))
                 .await
@@ -1292,7 +1292,7 @@ pub mod rpc {
                         subscription: subscription_id,
                     };
                     notify_price_sched_tx
-                        .send(notify_price_sched_update)
+                        .send(vec![notify_price_sched_update])
                         .await
                         .unwrap();
 

@@ -12,7 +12,7 @@ rpc_url = "https://api.pythtest.pyth.network"
 wss_url = "wss://api.pythtest.pyth.network"
 
 # Path to your publishing keypair.
-key_store.publish_keypair_path = "/path/to/keypair.json"
+key_store.publish_keypair_path = "/Users/juan-ignacio-marquez/Documents/publish_key_pair.json"
 
 # Oracle program pubkey
 key_store.program_key = "8tfDNiaEyrV6Q1U4DEXrEigs9DoDtkugzFbybENEbCDz" # conformance
@@ -59,4 +59,4 @@ exporter.compute_unit_price_micro_lamports = 1000
 # The duration of the interval at which `notify_price_sched` notifications will be sent.
 # Note that this doesn't affect the rate at which transactions are published:
 # this is soley a backwards-compatibility API feature.
-notify_price_sched_interval_duration = "400ms"
+notify_price_sched_interval_duration = "100ms"

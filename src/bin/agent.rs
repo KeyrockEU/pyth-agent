@@ -33,14 +33,14 @@ use {
 #[clap(author = "Pyth Data Association", version)]
 /// Pyth Agent - publish data to the Pyth Network
 struct Arguments {
-    #[clap(short, long, default_value = "config/config.toml")]
+    #[clap(short, long, default_value = "config/config.sample.pythtest.toml")]
     /// Path to configuration file
     config:     PathBuf,
     #[clap(short, long, default_value = "plain", value_enum)]
     /// Log flavor to use
     log_flavor: LogFlavor,
 
-    #[clap(short = 'L', long)]
+    #[clap(short = 'L', long, default_value = "true")]
     /// Whether to print file:line info for each log statement
     log_locations: bool,
 }
@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
     // Parse config early for logging channel capacity
     let config = Config::new(args.config).context("Could not parse config")?;
 
-    let log_level = env::var("RUST_LOG").unwrap_or("info".to_string());
+    let log_level = env::var("RUST_LOG").unwrap_or("warn".to_string());
 
     // Build an async drain with a different inner drain depending on
     // log flavor choice in CLI

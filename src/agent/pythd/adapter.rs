@@ -112,7 +112,7 @@ struct NotifyPriceSchedSubscription {
     /// ID of this subscription
     subscription_id:       SubscriptionID,
     /// Channel notifications are sent on
-    notify_price_sched_tx: mpsc::Sender<NotifyPriceSched>,
+    notify_price_sched_tx: mpsc::Sender<Vec<NotifyPriceSched>>,
 }
 
 /// Represents a single Notify Price subscription
@@ -150,7 +150,7 @@ pub enum Message {
     },
     SubscribePriceSched {
         account:               api::Pubkey,
-        notify_price_sched_tx: mpsc::Sender<NotifyPriceSched>,
+        notify_price_sched_tx: mpsc::Sender<Vec<NotifyPriceSched>>,
         result_tx:             oneshot::Sender<Result<SubscriptionID>>,
     },
     UpdatePrice {
@@ -472,7 +472,7 @@ impl Adapter {
     async fn handle_subscribe_price_sched(
         &mut self,
         account_pubkey: &solana_sdk::pubkey::Pubkey,
-        notify_price_sched_tx: mpsc::Sender<NotifyPriceSched>,
+        notify_price_sched_tx: mpsc::Sender<Vec<NotifyPriceSched>>,
     ) -> SubscriptionID {
         let subscription_id = self.next_subscription_id();
         self.notify_price_sched_subscriptions
@@ -507,15 +507,15 @@ impl Adapter {
     }
 
     async fn send_notify_price_sched(&self) -> Result<()> {
-        for subscription in self.notify_price_sched_subscriptions.values().flatten() {
-            // Send the notify price sched update without awaiting. This results in raising errors
-            // if the channel is full which normally should not happen. This is because we do not
-            // want to block the adapter if the channel is full.
-            subscription
-                .notify_price_sched_tx
-                .try_send(NotifyPriceSched {
-                    subscription: subscription.subscription_id,
-                })?;
+        let notifications:Vec<NotifyPriceSched> = self.notify_price_sched_subscriptions.values().flatten().map(|s|NotifyPriceSched {
+            subscription: s.subscription_id}).collect();
+        if let Some(subscription) = self.notify_price_sched_subscriptions.values().flatten().next() {
+        // Send the notify price sched update without awaiting. This results in raising errors
+        // if the channel is full which normally should not happen. This is because we do not
+        // want to block the adapter if the channel is full.
+        subscription
+            .notify_price_sched_tx
+            .try_send(notifications)?;
         }
 
         Ok(())
@@ -730,9 +730,9 @@ mod tests {
         for _ in 0..10 {
             assert_eq!(
                 notify_price_sched_rx.recv().await.unwrap(),
-                NotifyPriceSched {
+                vec![NotifyPriceSched {
                     subscription: subscription_id,
-                }
+                }]
             )
         }
     }
