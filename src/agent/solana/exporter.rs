@@ -1,85 +1,47 @@
-use {
-    self::transaction_monitor::TransactionMonitor,
-    super::{
-        super::store::{
-            self,
-            local::PriceInfo,
-            PriceIdentifier,
-        },
-        key_store,
-        network::Network,
+#![allow(clippy::too_many_arguments)]
+use self::transaction_monitor::TransactionMonitor;
+use super::{
+    super::store::{self, local::PriceInfo, PriceIdentifier},
+    key_store,
+    network::Network,
+};
+use crate::agent::{
+    market_hours::WeeklySchedule,
+    remote_keypair_loader::{KeypairRequest, RemoteKeypairLoader},
+};
+use anyhow::{anyhow, Context, Result};
+use bincode::Options;
+use chrono::Utc;
+use flume::{Sender, TryRecvError};
+use futures_util::future::{self, join_all};
+use key_store::KeyStore;
+use pyth_sdk::Identifier;
+use pyth_sdk_solana::state::PriceStatus;
+use serde::{Deserialize, Serialize};
+use slog::Logger;
+use solana_client::{nonblocking::rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
+use solana_sdk::{
+    commitment_config::CommitmentConfig,
+    compute_budget::ComputeBudgetInstruction,
+    hash::Hash,
+    instruction::{AccountMeta, Instruction},
+    pubkey::Pubkey,
+    signature::{Keypair, Signature},
+    signer::Signer,
+    sysvar::clock,
+    transaction::Transaction,
+};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+    time::Duration,
+};
+use tokio::{
+    sync::{
+        oneshot, watch,
     },
-    crate::agent::{
-        market_hours::WeeklySchedule,
-        remote_keypair_loader::{
-            KeypairRequest,
-            RemoteKeypairLoader,
-        },
-    },
-    anyhow::{
-        anyhow,
-        Context,
-        Result,
-    },
-    bincode::Options,
-    chrono::Utc,
-    futures_util::future::{
-        self,
-        join_all,
-    },
-    key_store::KeyStore,
-    pyth_sdk::Identifier,
-    pyth_sdk_solana::state::PriceStatus,
-    serde::{
-        Deserialize,
-        Serialize,
-    },
-    slog::Logger,
-    solana_client::{
-        nonblocking::rpc_client::RpcClient,
-        rpc_config::RpcSendTransactionConfig,
-    },
-    solana_sdk::{
-        commitment_config::CommitmentConfig,
-        compute_budget::ComputeBudgetInstruction,
-        hash::Hash,
-        instruction::{
-            AccountMeta,
-            Instruction,
-        },
-        pubkey::Pubkey,
-        signature::{
-            Keypair,
-            Signature,
-        },
-        signer::Signer,
-        sysvar::clock,
-        transaction::Transaction,
-    },
-    std::{
-        collections::{
-            BTreeMap,
-            HashMap,
-        },
-        sync::Arc,
-        time::Duration,
-    },
-    tokio::{
-        sync::{
-            mpsc,
-            mpsc::{
-                error::TryRecvError,
-                Sender,
-            },
-            oneshot,
-            watch,
-        },
-        task::JoinHandle,
-        time::{
-            self,
-            Interval,
-        },
-    },
+    task::JoinHandle,
+    time::{self, Interval},
 };
 
 const PYTH_ORACLE_VERSION: u32 = 2;
@@ -89,12 +51,12 @@ const UPDATE_PRICE_NO_FAIL_ON_ERROR: i32 = 13;
 #[repr(C)]
 #[derive(Serialize, PartialEq, Debug, Clone)]
 struct UpdPriceCmd {
-    version:  u32,
-    cmd:      i32,
-    status:   PriceStatus,
-    unused_:  u32,
-    price:    i64,
-    conf:     u64,
+    version: u32,
+    cmd: i32,
+    status: PriceStatus,
+    unused_: u32,
+    price: i64,
+    conf: u64,
     pub_slot: u64,
 }
 
@@ -105,38 +67,38 @@ pub struct Config {
     /// It is recommended to set this to slightly less than the network's block time,
     /// as the slot fetched will be used as the time of the price update.
     #[serde(with = "humantime_serde")]
-    pub refresh_network_state_interval_duration:         Duration,
+    pub refresh_network_state_interval_duration: Duration,
     /// Duration of the interval at which to publish updates
     #[serde(with = "humantime_serde")]
-    pub publish_interval_duration:                       Duration,
+    pub publish_interval_duration: Duration,
     /// Age after which a price update is considered stale and not published
     #[serde(with = "humantime_serde")]
-    pub staleness_threshold:                             Duration,
+    pub staleness_threshold: Duration,
     /// Wait at least this long before publishing an unchanged price
     /// state; unchanged price state means only timestamp has changed
     /// with other state identical to last published state.
-    pub unchanged_publish_threshold:                     Duration,
+    pub unchanged_publish_threshold: Duration,
     /// Maximum size of a batch
-    pub max_batch_size:                                  usize,
+    pub max_batch_size: usize,
     /// Capacity of the channel between the Exporter and the Transaction Monitor
-    pub inflight_transactions_channel_capacity:          usize,
+    pub inflight_transactions_channel_capacity: usize,
     /// Configuration for the Transaction Monitor
-    pub transaction_monitor:                             transaction_monitor::Config,
+    pub transaction_monitor: transaction_monitor::Config,
     /// Number of compute units requested per update_price instruction within the transaction
     /// (i.e., requested units equals `n * compute_unit_limit`, where `n` is the number of update_price
     /// instructions)
-    pub compute_unit_limit:                              u32,
+    pub compute_unit_limit: u32,
     /// Price per compute unit offered for update_price transactions If dynamic compute unit is
     /// enabled and this value is set, the actual price per compute unit will be the maximum of the
     /// network dynamic price and this value.
-    pub compute_unit_price_micro_lamports:               Option<u64>,
+    pub compute_unit_price_micro_lamports: Option<u64>,
     /// Enable using dynamic price per compute unit based on the network previous prioritization
     /// fees.
-    pub dynamic_compute_unit_pricing_enabled:            bool,
+    pub dynamic_compute_unit_pricing_enabled: bool,
     /// Maximum total compute unit fee paid for a single transaction. Defaults to 0.001 SOL. This
     /// is a safety measure while using dynamic compute price to prevent the exporter from paying
     /// too much for a single transaction
-    pub maximum_compute_unit_price_micro_lamports:       u64,
+    pub maximum_compute_unit_price_micro_lamports: u64,
     /// Maximum slot gap between the current slot and the oldest slot amongst all the accounts in
     /// the batch. This is used to calculate the dynamic price per compute unit. When the slot gap
     /// reaches this number we will use the maximum total_compute_fee for the transaction.
@@ -146,19 +108,19 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            refresh_network_state_interval_duration:         Duration::from_millis(200),
-            publish_interval_duration:                       Duration::from_secs(1),
-            staleness_threshold:                             Duration::from_secs(5),
-            unchanged_publish_threshold:                     Duration::from_secs(5),
-            max_batch_size:                                  12,
-            inflight_transactions_channel_capacity:          10000,
-            transaction_monitor:                             Default::default(),
+            refresh_network_state_interval_duration: Duration::from_millis(200),
+            publish_interval_duration: Duration::from_secs(1),
+            staleness_threshold: Duration::from_secs(5),
+            unchanged_publish_threshold: Duration::from_secs(5),
+            max_batch_size: 12,
+            inflight_transactions_channel_capacity: 10000,
+            transaction_monitor: Default::default(),
             // The largest transactions appear to be about ~12000 CUs. We leave ourselves some breathing room.
-            compute_unit_limit:                              40000,
-            compute_unit_price_micro_lamports:               None,
-            dynamic_compute_unit_pricing_enabled:            false,
+            compute_unit_limit: 40000,
+            compute_unit_price_micro_lamports: None,
+            dynamic_compute_unit_pricing_enabled: false,
             // Maximum compute unit price (as a cap on the dynamic price)
-            maximum_compute_unit_price_micro_lamports:       1_000_000,
+            maximum_compute_unit_price_micro_lamports: 1_000_000,
             // A publisher update is not included if it is 25 slots behind the current slot.
             // Due to the delay in the network (until a block gets confirmed) and potential
             // ws issues we add 15 slots to make sure we do not overpay.
@@ -172,11 +134,11 @@ pub fn spawn_exporter(
     network: Network,
     rpc_url: &str,
     rpc_timeout: Duration,
-    publisher_permissions_rx: mpsc::Receiver<HashMap<Pubkey, HashMap<Pubkey, WeeklySchedule>>>,
+    publisher_permissions_rx: flume::Receiver<HashMap<Pubkey, HashMap<Pubkey, WeeklySchedule>>>,
     key_store: KeyStore,
     local_store_tx: Sender<store::local::Message>,
     global_store_tx: Sender<store::global::Lookup>,
-    keypair_request_tx: mpsc::Sender<KeypairRequest>,
+    keypair_request_tx: flume::Sender<KeypairRequest>,
     logger: Logger,
 ) -> Result<Vec<JoinHandle<()>>> {
     // Create and spawn the network state querier
@@ -192,7 +154,7 @@ pub fn spawn_exporter(
 
     // Create and spawn the transaction monitor
     let (transactions_tx, transactions_rx) =
-        mpsc::channel(config.inflight_transactions_channel_capacity);
+        flume::bounded(config.inflight_transactions_channel_capacity);
     let mut transaction_monitor = TransactionMonitor::new(
         config.transaction_monitor.clone(),
         rpc_url,
@@ -260,7 +222,7 @@ pub struct Exporter {
     inflight_transactions_tx: Sender<Signature>,
 
     /// publisher => { permissioned_price => market hours } as read by the oracle module
-    publisher_permissions_rx: mpsc::Receiver<HashMap<Pubkey, HashMap<Pubkey, WeeklySchedule>>>,
+    publisher_permissions_rx: flume::Receiver<HashMap<Pubkey, HashMap<Pubkey, WeeklySchedule>>>,
 
     /// Currently known permissioned prices of this publisher along with their market hours
     our_prices: HashMap<Pubkey, WeeklySchedule>,
@@ -287,8 +249,8 @@ impl Exporter {
         global_store_tx: Sender<store::global::Lookup>,
         network_state_rx: watch::Receiver<NetworkState>,
         inflight_transactions_tx: Sender<Signature>,
-        publisher_permissions_rx: mpsc::Receiver<HashMap<Pubkey, HashMap<Pubkey, WeeklySchedule>>>,
-        keypair_request_tx: mpsc::Sender<KeypairRequest>,
+        publisher_permissions_rx: flume::Receiver<HashMap<Pubkey, HashMap<Pubkey, WeeklySchedule>>>,
+        keypair_request_tx: flume::Sender<KeypairRequest>,
         logger: Logger,
     ) -> Self {
         let publish_interval = time::interval(config.publish_interval_duration);
@@ -606,7 +568,7 @@ impl Exporter {
     async fn fetch_local_store_contents(&self) -> Result<HashMap<PriceIdentifier, PriceInfo>> {
         let (result_tx, result_rx) = oneshot::channel();
         self.local_store_tx
-            .send(store::local::Message::LookupAllPriceInfo { result_tx })
+            .send_async(store::local::Message::LookupAllPriceInfo { result_tx })
             .await
             .map_err(|_| anyhow!("failed to send lookup price info message to local store"))?;
         result_rx
@@ -716,7 +678,7 @@ impl Exporter {
             // hasn't updated for >= MAXIMUM_SLOT_GAP_FOR_DYNAMIC_COMPUTE_UNIT_PRICE slots.
             let (result_tx, result_rx) = oneshot::channel();
             self.global_store_tx
-                .send(store::global::Lookup::LookupPriceAccounts {
+                .send_async(store::global::Lookup::LookupPriceAccounts {
                     network: self.network,
                     price_ids: price_accounts.clone().into_iter().collect(),
                     result_tx,
@@ -809,7 +771,7 @@ impl Exporter {
 
             debug!(logger, "sent upd_price transaction"; "signature" => signature.to_string(), "instructions" => instructions.len(), "price_accounts" => format!("{:?}", price_accounts));
 
-            if let Err(err) = tx.send(signature).await {
+            if let Err(err) = tx.send_async(signature).await {
                 error!(logger, "{}", err);
                 debug!(logger, "error context"; "context" => format!("{:?}", err));
             }
@@ -827,34 +789,34 @@ impl Exporter {
     ) -> Result<Instruction> {
         Ok(Instruction {
             program_id: self.key_store.program_key,
-            accounts:   vec![
+            accounts: vec![
                 AccountMeta {
-                    pubkey:      publish_pubkey,
-                    is_signer:   true,
+                    pubkey: publish_pubkey,
+                    is_signer: true,
                     is_writable: true,
                 },
                 AccountMeta {
-                    pubkey:      price_id,
-                    is_signer:   false,
+                    pubkey: price_id,
+                    is_signer: false,
                     is_writable: true,
                 },
                 AccountMeta {
-                    pubkey:      clock::id(),
-                    is_signer:   false,
+                    pubkey: clock::id(),
+                    is_signer: false,
                     is_writable: false,
                 },
             ],
-            data:       bincode::DefaultOptions::new()
+            data: bincode::DefaultOptions::new()
                 .with_little_endian()
                 .with_fixint_encoding()
                 .serialize(
                     &(UpdPriceCmd {
-                        version:  PYTH_ORACLE_VERSION,
-                        cmd:      UPDATE_PRICE_NO_FAIL_ON_ERROR,
-                        status:   price_info.status,
-                        unused_:  0,
-                        price:    price_info.price,
-                        conf:     price_info.conf,
+                        version: PYTH_ORACLE_VERSION,
+                        cmd: UPDATE_PRICE_NO_FAIL_ON_ERROR,
+                        status: price_info.status,
+                        unused_: 0,
+                        price: price_info.price,
+                        conf: price_info.conf,
                         pub_slot: current_slot,
                     }),
                 )?,
@@ -890,58 +852,58 @@ impl Exporter {
 
         Ok(Instruction {
             program_id: self.key_store.program_key,
-            accounts:   vec![
+            accounts: vec![
                 AccountMeta {
-                    pubkey:      publish_pubkey,
-                    is_signer:   true,
+                    pubkey: publish_pubkey,
+                    is_signer: true,
                     is_writable: true,
                 },
                 AccountMeta {
-                    pubkey:      price_id,
-                    is_signer:   false,
+                    pubkey: price_id,
+                    is_signer: false,
                     is_writable: true,
                 },
                 AccountMeta {
-                    pubkey:      clock::id(),
-                    is_signer:   false,
+                    pubkey: clock::id(),
+                    is_signer: false,
                     is_writable: false,
                 },
                 // accumulator program key
                 AccountMeta {
-                    pubkey:      accumulator_program_key,
-                    is_signer:   false,
+                    pubkey: accumulator_program_key,
+                    is_signer: false,
                     is_writable: false,
                 },
                 // whitelist
                 AccountMeta {
-                    pubkey:      whitelist_pubkey,
-                    is_signer:   false,
+                    pubkey: whitelist_pubkey,
+                    is_signer: false,
                     is_writable: false,
                 },
                 // oracle_auth_pda
                 AccountMeta {
-                    pubkey:      oracle_auth_pda,
-                    is_signer:   false,
+                    pubkey: oracle_auth_pda,
+                    is_signer: false,
                     is_writable: false,
                 },
                 // accumulator_data
                 AccountMeta {
-                    pubkey:      accumulator_data_pubkey,
-                    is_signer:   false,
+                    pubkey: accumulator_data_pubkey,
+                    is_signer: false,
                     is_writable: true,
                 },
             ],
-            data:       bincode::DefaultOptions::new()
+            data: bincode::DefaultOptions::new()
                 .with_little_endian()
                 .with_fixint_encoding()
                 .serialize(
                     &(UpdPriceCmd {
-                        version:  PYTH_ORACLE_VERSION,
-                        cmd:      UPDATE_PRICE_NO_FAIL_ON_ERROR,
-                        status:   price_info.status,
-                        unused_:  0,
-                        price:    price_info.price,
-                        conf:     price_info.conf,
+                        version: PYTH_ORACLE_VERSION,
+                        cmd: UPDATE_PRICE_NO_FAIL_ON_ERROR,
+                        status: price_info.status,
+                        unused_: 0,
+                        price: price_info.price,
+                        conf: price_info.conf,
                         pub_slot: current_slot,
                     }),
                 )?,
@@ -951,7 +913,7 @@ impl Exporter {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NetworkState {
-    blockhash:    Hash,
+    blockhash: Hash,
     current_slot: u64,
 }
 
@@ -1009,7 +971,7 @@ impl NetworkStateQuerier {
 
         // Send the result on the channel
         self.network_state_tx.send(NetworkState {
-            blockhash:    latest_blockhash_result?,
+            blockhash: latest_blockhash_result?,
             current_slot: current_slot_result?,
         })?;
 
@@ -1018,30 +980,15 @@ impl NetworkStateQuerier {
 }
 
 mod transaction_monitor {
-    use {
-        anyhow::Result,
-        serde::{
-            Deserialize,
-            Serialize,
-        },
-        slog::Logger,
-        solana_client::nonblocking::rpc_client::RpcClient,
-        solana_sdk::{
-            commitment_config::CommitmentConfig,
-            signature::Signature,
-        },
-        std::{
-            collections::VecDeque,
-            time::Duration,
-        },
-        tokio::{
-            sync::mpsc,
-            time::{
-                self,
-                Interval,
-            },
-        },
-    };
+    use anyhow::Result;
+    use serde::{Deserialize, Serialize};
+    use slog::Logger;
+    use solana_client::nonblocking::rpc_client::RpcClient;
+    use solana_sdk::{commitment_config::CommitmentConfig, signature::Signature};
+    use std::{collections::VecDeque, time::Duration};
+    use tokio::
+        time::{self, Interval}
+    ;
 
     #[derive(Clone, Serialize, Deserialize, Debug)]
     #[serde(default)]
@@ -1053,14 +1000,14 @@ mod transaction_monitor {
         /// Maximum number of recent transactions to monitor. When this number is exceeded,
         /// the oldest transactions are no longer monitored. It is recommended to set this to
         /// a value at least as large as (number of products published / number of products in a batch).
-        pub max_transactions:       usize,
+        pub max_transactions: usize,
     }
 
     impl Default for Config {
         fn default() -> Self {
             Self {
                 poll_interval_duration: Duration::from_secs(4),
-                max_transactions:       100,
+                max_transactions: 100,
             }
         }
     }
@@ -1074,7 +1021,7 @@ mod transaction_monitor {
         rpc_client: RpcClient,
 
         /// Channel the signatures of transactions we have sent are received.
-        transactions_rx: mpsc::Receiver<Signature>,
+        transactions_rx: flume::Receiver<Signature>,
 
         /// Vector storing the signatures of transactions we have sent
         sent_transactions: VecDeque<Signature>,
@@ -1090,7 +1037,7 @@ mod transaction_monitor {
             config: Config,
             rpc_url: &str,
             rpc_timeout: Duration,
-            transactions_rx: mpsc::Receiver<Signature>,
+            transactions_rx: flume::Receiver<Signature>,
             logger: Logger,
         ) -> Self {
             let poll_interval = time::interval(config.poll_interval_duration);
@@ -1116,7 +1063,7 @@ mod transaction_monitor {
 
         async fn handle_next(&mut self) -> Result<()> {
             tokio::select! {
-                Some(signature) = self.transactions_rx.recv() => {
+                Ok(signature) = self.transactions_rx.recv_async() => {
                     self.add_transaction(signature);
                     Ok(())
                 }
@@ -1159,8 +1106,7 @@ mod transaction_monitor {
             let confirmed = statuses
                 .into_iter()
                 .zip(signatures_contiguous)
-                .map(|(status, sig)| status.map(|some_status| (some_status, sig))) // Collate Some() statuses with their tx signatures before flatten()
-                .flatten()
+                .filter_map(|(status, sig)| status.map(|some_status| (some_status, sig)))
                 .filter(|(status, sig)| {
                     if let Some(err) = status.err.as_ref() {
                         warn!(self.logger, "TX status has err value";

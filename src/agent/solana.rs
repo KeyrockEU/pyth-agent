@@ -6,35 +6,20 @@ pub mod oracle;
 /// - The Exporter, which publishes data to the network
 pub mod network {
 
-    use {
-        super::{
-            super::{
-                store,
-                store::global,
-            },
-            exporter,
-            key_store::{
-                self,
-                KeyStore,
-            },
-            oracle,
-        },
-        crate::agent::remote_keypair_loader::KeypairRequest,
-        anyhow::Result,
-        serde::{
-            Deserialize,
-            Serialize,
-        },
-        slog::Logger,
-        std::time::Duration,
-        tokio::{
-            sync::{
-                mpsc,
-                mpsc::Sender,
-            },
-            task::JoinHandle,
-        },
+    use super::{
+        super::{store, store::global},
+        exporter,
+        key_store::{self, KeyStore},
+        oracle,
     };
+    use crate::agent::remote_keypair_loader::KeypairRequest;
+    use anyhow::Result;
+    use flume::Sender;
+    use serde::{Deserialize, Serialize};
+    use slog::Logger;
+    use tokio::task::JoinHandle;
+    use std::time::Duration;
+
 
     #[derive(Clone, Copy, Serialize, Deserialize, Debug)]
     pub enum Network {
@@ -59,21 +44,21 @@ pub mod network {
     pub struct Config {
         /// HTTP RPC endpoint
         #[serde(default = "default_rpc_url")]
-        pub rpc_url:     String,
+        pub rpc_url: String,
         /// WSS RPC endpoint
         #[serde(default = "default_wss_url")]
-        pub wss_url:     String,
+        pub wss_url: String,
         /// Timeout for the requests to the RPC
         #[serde(with = "humantime_serde", default = "default_rpc_timeout")]
         pub rpc_timeout: Duration,
         /// Keystore
-        pub key_store:   key_store::Config,
+        pub key_store: key_store::Config,
         /// Configuration for the Oracle reading data from this network
         #[serde(default)]
-        pub oracle:      oracle::Config,
+        pub oracle: oracle::Config,
         /// Configuration for the Exporter publishing data to this network
         #[serde(default)]
-        pub exporter:    exporter::Config,
+        pub exporter: exporter::Config,
     }
 
     pub fn spawn_network(
@@ -87,7 +72,7 @@ pub mod network {
     ) -> Result<Vec<JoinHandle<()>>> {
         // Publisher permissions updates between oracle and exporter
         let (publisher_permissions_tx, publisher_permissions_rx) =
-            mpsc::channel(config.oracle.updates_channel_capacity);
+            flume::bounded(config.oracle.updates_channel_capacity);
 
         // Spawn the Oracle
         let mut jhs = oracle::spawn_oracle(
@@ -122,26 +107,11 @@ pub mod network {
 
 /// The key_store module is responsible for parsing the pythd key store.
 mod key_store {
-    use {
-        anyhow::Result,
-        serde::{
-            de::Error,
-            Deserialize,
-            Deserializer,
-            Serialize,
-            Serializer,
-        },
-        slog::Logger,
-        solana_sdk::{
-            pubkey::Pubkey,
-            signature::Keypair,
-            signer::keypair,
-        },
-        std::{
-            path::PathBuf,
-            str::FromStr,
-        },
-    };
+    use anyhow::Result;
+    use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
+    use slog::Logger;
+    use solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::keypair};
+    use std::{path::PathBuf, str::FromStr};
 
     #[derive(Clone, Serialize, Deserialize, Debug)]
     pub struct Config {
@@ -155,20 +125,20 @@ mod key_store {
             serialize_with = "pubkey_string_ser",
             deserialize_with = "pubkey_string_de"
         )]
-        pub program_key:          Pubkey,
+        pub program_key: Pubkey,
         /// The public key of the root mapping account
         #[serde(
             serialize_with = "pubkey_string_ser",
             deserialize_with = "pubkey_string_de"
         )]
-        pub mapping_key:          Pubkey,
+        pub mapping_key: Pubkey,
         /// The public key of the accumulator program.
         #[serde(
             serialize_with = "opt_pubkey_string_ser",
             deserialize_with = "opt_pubkey_string_de",
             default
         )]
-        pub accumulator_key:      Option<Pubkey>,
+        pub accumulator_key: Option<Pubkey>,
     }
 
     pub struct KeyStore {
@@ -177,9 +147,9 @@ mod key_store {
         /// via the remote loading endpoint
         pub publish_keypair: Option<Keypair>,
         /// Public key of the Oracle program
-        pub program_key:     Pubkey,
+        pub program_key: Pubkey,
         /// Public key of the root mapping account
-        pub mapping_key:     Pubkey,
+        pub mapping_key: Pubkey,
         /// Public key of the accumulator program (if provided)
         pub accumulator_key: Option<Pubkey>,
     }

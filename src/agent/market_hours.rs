@@ -1,23 +1,10 @@
 //! Market hours metadata parsing and evaluation logic
 
-use {
-    anyhow::{
-        anyhow,
-        Context,
-        Result,
-    },
-    chrono::{
-        naive::NaiveTime,
-        DateTime,
-        Datelike,
-        Duration,
-        Utc,
-        Weekday,
-    },
-    chrono_tz::Tz,
-    lazy_static::lazy_static,
-    std::str::FromStr,
-};
+use anyhow::{anyhow, Context, Result};
+use chrono::{naive::NaiveTime, DateTime, Datelike, Duration, Utc, Weekday};
+use chrono_tz::Tz;
+use lazy_static::lazy_static;
+use std::str::FromStr;
 
 lazy_static! {
     /// Helper time value representing 24:00:00 as 00:00:00 minus 1
@@ -31,26 +18,26 @@ lazy_static! {
 #[derive(Clone, Default, Debug, Eq, PartialEq)]
 pub struct WeeklySchedule {
     pub timezone: Tz,
-    pub mon:      MHKind,
-    pub tue:      MHKind,
-    pub wed:      MHKind,
-    pub thu:      MHKind,
-    pub fri:      MHKind,
-    pub sat:      MHKind,
-    pub sun:      MHKind,
+    pub mon: MHKind,
+    pub tue: MHKind,
+    pub wed: MHKind,
+    pub thu: MHKind,
+    pub fri: MHKind,
+    pub sat: MHKind,
+    pub sun: MHKind,
 }
 
 impl WeeklySchedule {
     pub fn all_closed() -> Self {
         Self {
             timezone: Default::default(),
-            mon:      MHKind::Closed,
-            tue:      MHKind::Closed,
-            wed:      MHKind::Closed,
-            thu:      MHKind::Closed,
-            fri:      MHKind::Closed,
-            sat:      MHKind::Closed,
-            sun:      MHKind::Closed,
+            mon: MHKind::Closed,
+            tue: MHKind::Closed,
+            wed: MHKind::Closed,
+            thu: MHKind::Closed,
+            fri: MHKind::Closed,
+            sat: MHKind::Closed,
+            sun: MHKind::Closed,
         }
     }
 
@@ -62,7 +49,7 @@ impl WeeklySchedule {
 
         let market_time = when_market_local.time();
 
-        let ret = match market_weekday {
+        match market_weekday {
             Weekday::Mon => self.mon.can_publish_at(market_time),
             Weekday::Tue => self.tue.can_publish_at(market_time),
             Weekday::Wed => self.wed.can_publish_at(market_time),
@@ -70,16 +57,14 @@ impl WeeklySchedule {
             Weekday::Fri => self.fri.can_publish_at(market_time),
             Weekday::Sat => self.sat.can_publish_at(market_time),
             Weekday::Sun => self.sun.can_publish_at(market_time),
-        };
-
-        ret
+        }
     }
 }
 
 impl FromStr for WeeklySchedule {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Self> {
-        let mut split_by_commas = s.split(",");
+        let mut split_by_commas = s.split(',');
 
         // Timezone id, e.g. Europe/Paris
         let tz_str = split_by_commas.next().ok_or(anyhow!(
@@ -88,7 +73,6 @@ impl FromStr for WeeklySchedule {
         let tz: Tz = tz_str
             .trim()
             .parse()
-            .map_err(|e: String| anyhow!(e))
             .context(format!("Could parse timezone from {:?}", tz_str))?;
 
         let mut weekday_schedules = Vec::with_capacity(7);
@@ -130,25 +114,25 @@ impl FromStr for WeeklySchedule {
             timezone: tz,
             // These unwraps failing would be an internal error, but
             // panicking here does not seem wise.
-            mon:      weekday_sched_iter
+            mon: weekday_sched_iter
                 .next()
                 .ok_or(anyhow!("INTERNAL: weekday_sched_iter too short"))?,
-            tue:      weekday_sched_iter
+            tue: weekday_sched_iter
                 .next()
                 .ok_or(anyhow!("INTERNAL: weekday_sched_iter too short"))?,
-            wed:      weekday_sched_iter
+            wed: weekday_sched_iter
                 .next()
                 .ok_or(anyhow!("INTERNAL: weekday_sched_iter too short"))?,
-            thu:      weekday_sched_iter
+            thu: weekday_sched_iter
                 .next()
                 .ok_or(anyhow!("INTERNAL: weekday_sched_iter too short"))?,
-            fri:      weekday_sched_iter
+            fri: weekday_sched_iter
                 .next()
                 .ok_or(anyhow!("INTERNAL: weekday_sched_iter too short"))?,
-            sat:      weekday_sched_iter
+            sat: weekday_sched_iter
                 .next()
                 .ok_or(anyhow!("INTERNAL: weekday_sched_iter too short"))?,
-            sun:      weekday_sched_iter
+            sun: weekday_sched_iter
                 .next()
                 .ok_or(anyhow!("INTERNAL: weekday_sched_iter too short"))?,
         };
@@ -192,7 +176,7 @@ impl FromStr for MHKind {
             "O" => Ok(MHKind::Open),
             "C" => Ok(MHKind::Closed),
             other => {
-                let (start_str, end_str) = other.split_once("-").ok_or(anyhow!(
+                let (start_str, end_str) = other.split_once('-').ok_or(anyhow!(
                     "Missing '-' delimiter between start and end of range"
                 ))?;
 
@@ -204,7 +188,7 @@ impl FromStr for MHKind {
                 // the next best thing - see MAX_TIME_INSTANT for
                 // details.
                 let end = if end_str.contains("24:00") {
-                    MAX_TIME_INSTANT.clone()
+                    *MAX_TIME_INSTANT
                 } else {
                     NaiveTime::parse_from_str(end_str, "%H:%M")
                         .context("end time does not match HH:MM format")?
@@ -222,13 +206,8 @@ impl FromStr for MHKind {
 
 #[cfg(test)]
 mod tests {
-    use {
-        super::*,
-        chrono::{
-            NaiveDate,
-            NaiveDateTime,
-        },
-    };
+    use super::*;
+    use chrono::{NaiveDate, NaiveDateTime};
 
     #[test]
     fn test_parsing_happy_path() -> Result<()> {
@@ -239,28 +218,28 @@ mod tests {
 
         let expected = WeeklySchedule {
             timezone: Tz::Europe__Warsaw,
-            mon:      MHKind::TimeRange(
+            mon: MHKind::TimeRange(
                 NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
                 NaiveTime::from_hms_opt(17, 0, 0).unwrap(),
             ),
-            tue:      MHKind::TimeRange(
+            tue: MHKind::TimeRange(
                 NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
                 NaiveTime::from_hms_opt(17, 0, 0).unwrap(),
             ),
-            wed:      MHKind::TimeRange(
+            wed: MHKind::TimeRange(
                 NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
                 NaiveTime::from_hms_opt(17, 0, 0).unwrap(),
             ),
-            thu:      MHKind::TimeRange(
+            thu: MHKind::TimeRange(
                 NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
                 NaiveTime::from_hms_opt(17, 0, 0).unwrap(),
             ),
-            fri:      MHKind::TimeRange(
+            fri: MHKind::TimeRange(
                 NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
                 NaiveTime::from_hms_opt(17, 0, 0).unwrap(),
             ),
-            sat:      MHKind::Closed,
-            sun:      MHKind::Closed,
+            sat: MHKind::Closed,
+            sun: MHKind::Closed,
         };
 
         assert_eq!(parsed, expected);
@@ -326,7 +305,7 @@ mod tests {
 
         // Prepare UTC datetimes that fall before, within and after market hours
         let format = "%Y-%m-%d %H:%M";
-        let bad_datetimes_before = vec![
+        let bad_datetimes_before = [
             NaiveDateTime::parse_from_str("2023-11-20 04:30", format)?.and_utc(),
             NaiveDateTime::parse_from_str("2023-11-21 05:30", format)?.and_utc(),
             NaiveDateTime::parse_from_str("2023-11-22 06:30", format)?.and_utc(),
@@ -336,7 +315,7 @@ mod tests {
             NaiveDateTime::parse_from_str("2023-11-26 10:30", format)?.and_utc(),
         ];
 
-        let ok_datetimes = vec![
+        let ok_datetimes = [
             NaiveDateTime::parse_from_str("2023-11-20 05:30", format)?.and_utc(),
             NaiveDateTime::parse_from_str("2023-11-21 06:30", format)?.and_utc(),
             NaiveDateTime::parse_from_str("2023-11-22 07:30", format)?.and_utc(),
@@ -346,7 +325,7 @@ mod tests {
             NaiveDateTime::parse_from_str("2023-11-26 11:30", format)?.and_utc(),
         ];
 
-        let bad_datetimes_after = vec![
+        let bad_datetimes_after = [
             NaiveDateTime::parse_from_str("2023-11-20 06:30", format)?.and_utc(),
             NaiveDateTime::parse_from_str("2023-11-21 07:30", format)?.and_utc(),
             NaiveDateTime::parse_from_str("2023-11-22 08:30", format)?.and_utc(),
@@ -383,10 +362,10 @@ mod tests {
             "Europe/Amsterdam,23:00-24:00,00:00-01:00,O,C,C,C,C".parse()?;
 
         let format = "%Y-%m-%d %H:%M";
-        let ok_datetimes = vec![
+        let ok_datetimes = [
             NaiveDate::from_ymd_opt(2023, 11, 20)
                 .unwrap()
-                .and_time(MAX_TIME_INSTANT.clone())
+                .and_time(*MAX_TIME_INSTANT)
                 .and_local_timezone(Tz::Europe__Amsterdam)
                 .unwrap(),
             NaiveDateTime::parse_from_str("2023-11-21 00:00", format)?
@@ -394,7 +373,7 @@ mod tests {
                 .unwrap(),
         ];
 
-        let bad_datetimes = vec![
+        let bad_datetimes = [
             // Start of Monday Nov 20th, must not be confused for MAX_TIME_INSTANT on that day
             NaiveDateTime::parse_from_str("2023-11-20 00:00", format)?
                 .and_local_timezone(Tz::Europe__Amsterdam)
@@ -403,7 +382,7 @@ mod tests {
             // confused for Wednesday 00:00 which is open.
             NaiveDate::from_ymd_opt(2023, 11, 21)
                 .unwrap()
-                .and_time(MAX_TIME_INSTANT.clone())
+                .and_time(*MAX_TIME_INSTANT)
                 .and_local_timezone(Tz::Europe__Amsterdam)
                 .unwrap(),
         ];

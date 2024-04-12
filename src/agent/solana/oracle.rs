@@ -1,52 +1,27 @@
+#![allow(clippy::too_many_arguments)]
 // This module is responsible for loading the current state of the
 // on-chain Oracle program accounts from Solana.
-use {
-    self::subscriber::Subscriber,
-    super::key_store::KeyStore,
-    crate::agent::{
-        market_hours::WeeklySchedule,
-        store::global,
-    },
-    anyhow::{
-        anyhow,
-        Context,
-        Result,
-    },
-    pyth_sdk_solana::state::{
-        load_mapping_account,
-        load_product_account,
-        GenericPriceAccount,
-        PriceComp,
-        PythnetPriceAccount,
-        SolanaPriceAccount,
-    },
-    serde::{
-        Deserialize,
-        Serialize,
-    },
-    slog::Logger,
-    solana_client::nonblocking::rpc_client::RpcClient,
-    solana_sdk::{
-        account::Account,
-        commitment_config::{
-            CommitmentConfig,
-            CommitmentLevel,
-        },
-        pubkey::Pubkey,
-    },
-    std::{
-        collections::{
-            HashMap,
-            HashSet,
-        },
-        time::Duration,
-    },
-    tokio::{
-        sync::mpsc,
-        task::JoinHandle,
-        time::Interval,
-    },
+use self::subscriber::Subscriber;
+use super::key_store::KeyStore;
+use crate::agent::{market_hours::WeeklySchedule, store::global};
+use anyhow::{anyhow, Context, Result};
+use pyth_sdk_solana::state::{
+    load_mapping_account, load_product_account, GenericPriceAccount, PriceComp,
+    PythnetPriceAccount, SolanaPriceAccount,
 };
+use serde::{Deserialize, Serialize};
+use slog::Logger;
+use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_sdk::{
+    account::Account,
+    commitment_config::{CommitmentConfig, CommitmentLevel},
+    pubkey::Pubkey,
+};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
+use tokio::{task::JoinHandle, time::Interval};
 
 /// This shim is used to abstract over SolanaPriceAccount and PythnetPriceAccount so we
 /// can iterate over either of these. The API is intended to force users to be aware of
@@ -62,7 +37,7 @@ use {
 #[derive(Copy, Clone, Debug)]
 pub struct PriceEntry {
     // We intentionally act as if we have a truncated account where the underlying memory is unavailable.
-    account:  GenericPriceAccount<0, ()>,
+    account: GenericPriceAccount<0, ()>,
     pub comp: [PriceComp; 64],
 }
 
@@ -113,9 +88,9 @@ impl std::ops::Deref for PriceEntry {
 
 #[derive(Default, Debug, Clone)]
 pub struct Data {
-    pub mapping_accounts:      HashMap<Pubkey, MappingAccount>,
-    pub product_accounts:      HashMap<Pubkey, ProductEntry>,
-    pub price_accounts:        HashMap<Pubkey, PriceEntry>,
+    pub mapping_accounts: HashMap<Pubkey, MappingAccount>,
+    pub product_accounts: HashMap<Pubkey, ProductEntry>,
+    pub price_accounts: HashMap<Pubkey, PriceEntry>,
     /// publisher => {their permissioned price accounts => market hours}
     pub publisher_permissions: HashMap<Pubkey, HashMap<Pubkey, WeeklySchedule>>,
 }
@@ -139,9 +114,9 @@ impl Data {
 pub type MappingAccount = pyth_sdk_solana::state::MappingAccount;
 #[derive(Debug, Clone)]
 pub struct ProductEntry {
-    pub account_data:    pyth_sdk_solana::state::ProductAccount,
+    pub account_data: pyth_sdk_solana::state::ProductAccount,
     pub weekly_schedule: WeeklySchedule,
-    pub price_accounts:  Vec<Pubkey>,
+    pub price_accounts: Vec<Pubkey>,
 }
 
 // Oracle is responsible for fetching Solana account data stored in the Pyth on-chain Oracle.
@@ -150,13 +125,13 @@ pub struct Oracle {
     data: Data,
 
     /// Channel on which polled data are received from the Poller
-    data_rx: mpsc::Receiver<Data>,
+    data_rx: flume::Receiver<Data>,
 
     /// Channel on which account updates are received from the Subscriber
-    updates_rx: mpsc::Receiver<(Pubkey, solana_sdk::account::Account)>,
+    updates_rx: flume::Receiver<(Pubkey, solana_sdk::account::Account)>,
 
     /// Channel on which updates are sent to the global store
-    global_store_tx: mpsc::Sender<global::Update>,
+    global_store_tx: flume::Sender<global::Update>,
 
     logger: Logger,
 }
@@ -165,16 +140,16 @@ pub struct Oracle {
 #[serde(default)]
 pub struct Config {
     /// The commitment level to use when reading data from the RPC node.
-    pub commitment:               CommitmentLevel,
+    pub commitment: CommitmentLevel,
     /// The interval with which to poll account information.
     #[serde(with = "humantime_serde")]
-    pub poll_interval_duration:   Duration,
+    pub poll_interval_duration: Duration,
     /// Whether subscribing to account updates over websocket is enabled
-    pub subscriber_enabled:       bool,
+    pub subscriber_enabled: bool,
     /// Capacity of the channel over which the Subscriber sends updates to the Oracle
     pub updates_channel_capacity: usize,
     /// Capacity of the channel over which the Poller sends data to the Oracle
-    pub data_channel_capacity:    usize,
+    pub data_channel_capacity: usize,
 
     /// Ask the RPC for up to this many product/price accounts in a
     /// single request. Tune this setting if you're experiencing
@@ -187,12 +162,12 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            commitment:               CommitmentLevel::Confirmed,
-            poll_interval_duration:   Duration::from_secs(5),
-            subscriber_enabled:       true,
+            commitment: CommitmentLevel::Confirmed,
+            poll_interval_duration: Duration::from_secs(5),
+            subscriber_enabled: true,
             updates_channel_capacity: 10000,
-            data_channel_capacity:    10000,
-            max_lookup_batch_size:    100,
+            data_channel_capacity: 10000,
+            max_lookup_batch_size: 100,
         }
     }
 }
@@ -202,15 +177,15 @@ pub fn spawn_oracle(
     rpc_url: &str,
     wss_url: &str,
     rpc_timeout: Duration,
-    global_store_update_tx: mpsc::Sender<global::Update>,
-    publisher_permissions_tx: mpsc::Sender<HashMap<Pubkey, HashMap<Pubkey, WeeklySchedule>>>,
+    global_store_update_tx: flume::Sender<global::Update>,
+    publisher_permissions_tx: flume::Sender<HashMap<Pubkey, HashMap<Pubkey, WeeklySchedule>>>,
     key_store: KeyStore,
     logger: Logger,
 ) -> Vec<JoinHandle<()>> {
     let mut jhs = vec![];
 
     // Create and spawn the account subscriber
-    let (updates_tx, updates_rx) = mpsc::channel(config.updates_channel_capacity);
+    let (updates_tx, updates_rx) = flume::bounded(config.updates_channel_capacity);
     if config.subscriber_enabled {
         let subscriber = Subscriber::new(
             wss_url.to_string(),
@@ -223,7 +198,7 @@ pub fn spawn_oracle(
     }
 
     // Create and spawn the Poller
-    let (data_tx, data_rx) = mpsc::channel(config.data_channel_capacity);
+    let (data_tx, data_rx) = flume::bounded(config.data_channel_capacity);
     let mut poller = Poller::new(
         data_tx,
         publisher_permissions_tx,
@@ -246,9 +221,9 @@ pub fn spawn_oracle(
 
 impl Oracle {
     pub fn new(
-        data_rx: mpsc::Receiver<Data>,
-        updates_rx: mpsc::Receiver<(Pubkey, solana_sdk::account::Account)>,
-        global_store_tx: mpsc::Sender<global::Update>,
+        data_rx: flume::Receiver<Data>,
+        updates_rx: flume::Receiver<(Pubkey, solana_sdk::account::Account)>,
+        global_store_tx: flume::Sender<global::Update>,
         logger: Logger,
     ) -> Self {
         Oracle {
@@ -271,10 +246,10 @@ impl Oracle {
 
     async fn handle_next(&mut self) -> Result<()> {
         tokio::select! {
-            Some((account_key, account)) = self.updates_rx.recv() => {
+            Ok((account_key, account)) = self.updates_rx.recv_async() => {
                 self.handle_account_update(&account_key, &account).await
             }
-            Some(data) = self.data_rx.recv() => {
+            Ok(data) = self.data_rx.recv_async() => {
                 self.handle_data_update(data);
                 self.send_all_data_to_global_store().await
             }
@@ -360,9 +335,7 @@ impl Oracle {
 
         debug!(self.logger, "observed on-chain price account update"; "pubkey" => account_key.to_string(), "price" => price_entry.agg.price, "conf" => price_entry.agg.conf, "status" => format!("{:?}", price_entry.agg.status));
 
-        self.data
-            .price_accounts
-            .insert(*account_key, price_entry.clone());
+        self.data.price_accounts.insert(*account_key, price_entry);
 
         self.notify_price_account_update(account_key, &price_entry)
             .await?;
@@ -390,9 +363,9 @@ impl Oracle {
         account: &ProductEntry,
     ) -> Result<()> {
         self.global_store_tx
-            .send(global::Update::ProductAccountUpdate {
+            .send_async(global::Update::ProductAccountUpdate {
                 account_key: *account_key,
-                account:     account.clone(),
+                account: Box::new(account.clone()),
             })
             .await
             .map_err(|_| anyhow!("failed to notify product account update"))
@@ -404,9 +377,9 @@ impl Oracle {
         account: &PriceEntry,
     ) -> Result<()> {
         self.global_store_tx
-            .send(global::Update::PriceAccountUpdate {
+            .send_async(global::Update::PriceAccountUpdate {
                 account_key: *account_key,
-                account:     account.clone(),
+                account: Box::new(*account),
             })
             .await
             .map_err(|_| anyhow!("failed to notify price account update"))
@@ -415,10 +388,10 @@ impl Oracle {
 
 struct Poller {
     /// The channel on which to send polled update data
-    data_tx: mpsc::Sender<Data>,
+    data_tx: flume::Sender<Data>,
 
     /// Updates about permissioned price accounts from oracle to exporter
-    publisher_permissions_tx: mpsc::Sender<HashMap<Pubkey, HashMap<Pubkey, WeeklySchedule>>>,
+    publisher_permissions_tx: flume::Sender<HashMap<Pubkey, HashMap<Pubkey, WeeklySchedule>>>,
 
     /// The RPC client to use to poll data from the RPC node
     rpc_client: RpcClient,
@@ -437,8 +410,8 @@ struct Poller {
 
 impl Poller {
     pub fn new(
-        data_tx: mpsc::Sender<Data>,
-        publisher_permissions_tx: mpsc::Sender<HashMap<Pubkey, HashMap<Pubkey, WeeklySchedule>>>,
+        data_tx: flume::Sender<Data>,
+        publisher_permissions_tx: flume::Sender<HashMap<Pubkey, HashMap<Pubkey, WeeklySchedule>>>,
         rpc_url: &str,
         rpc_timeout: Duration,
         commitment: CommitmentLevel,
@@ -480,12 +453,12 @@ impl Poller {
         let fresh_data = self.poll().await?;
 
         self.publisher_permissions_tx
-            .send(fresh_data.publisher_permissions.clone())
+            .send_async(fresh_data.publisher_permissions.clone())
             .await
             .context("Updating permissioned price accounts for exporter")?;
 
         self.data_tx
-            .send(fresh_data)
+            .send_async(fresh_data)
             .await
             .context("failed to send data to oracle")?;
 
@@ -697,34 +670,20 @@ impl Poller {
 }
 
 mod subscriber {
-    use {
-        anyhow::{
-            anyhow,
-            Result,
-        },
-        slog::Logger,
-        solana_account_decoder::UiAccountEncoding,
-        solana_client::{
-            nonblocking::pubsub_client::PubsubClient,
-            rpc_config::{
-                RpcAccountInfoConfig,
-                RpcProgramAccountsConfig,
-            },
-        },
-        solana_sdk::{
-            account::Account,
-            commitment_config::{
-                CommitmentConfig,
-                CommitmentLevel,
-            },
-            pubkey::Pubkey,
-        },
-        std::time::Duration,
-        tokio::{
-            sync::mpsc,
-            time::Instant,
-        },
+    use anyhow::{anyhow, Result};
+    use slog::Logger;
+    use solana_account_decoder::UiAccountEncoding;
+    use solana_client::{
+        nonblocking::pubsub_client::PubsubClient,
+        rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
     };
+    use solana_sdk::{
+        account::Account,
+        commitment_config::{CommitmentConfig, CommitmentLevel},
+        pubkey::Pubkey,
+    };
+    use std::time::Duration;
+    use tokio::time::Instant;
 
     /// Subscriber subscribes to all changes on the given account, and sends those changes
     /// on updates_tx. This is a convenience wrapper around the Blockchain Shadow crate.
@@ -740,7 +699,7 @@ mod subscriber {
         program_key: Pubkey,
 
         /// Channel on which updates are sent
-        updates_tx: mpsc::Sender<(Pubkey, solana_sdk::account::Account)>,
+        updates_tx: flume::Sender<(Pubkey, solana_sdk::account::Account)>,
 
         logger: Logger,
     }
@@ -750,7 +709,7 @@ mod subscriber {
             wss_url: String,
             commitment: CommitmentLevel,
             program_key: Pubkey,
-            updates_tx: mpsc::Sender<(Pubkey, solana_sdk::account::Account)>,
+            updates_tx: flume::Sender<(Pubkey, solana_sdk::account::Account)>,
             logger: Logger,
         ) -> Self {
             Subscriber {
@@ -790,8 +749,8 @@ mod subscriber {
                     encoding: Some(UiAccountEncoding::Base64Zstd),
                     ..Default::default()
                 },
-                filters:        None,
-                with_context:   Some(true),
+                filters: None,
+                with_context: Some(true),
             };
 
             let (mut notif, _unsub) = client
@@ -812,7 +771,7 @@ mod subscriber {
                         };
 
                         self.updates_tx
-                            .send((update.value.pubkey.as_str().try_into()?, account))
+                            .send_async((update.value.pubkey.as_str().try_into()?, account))
                             .await
                             .map_err(|_| anyhow!("failed to send update to oracle"))?;
                     }

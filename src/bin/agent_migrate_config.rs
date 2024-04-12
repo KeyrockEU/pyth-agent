@@ -1,26 +1,13 @@
-use {
-    anyhow::{
-        anyhow,
-        Context,
-        Result,
-    },
-    clap::Parser,
-    solana_sdk::pubkey::Pubkey,
-    std::{
-        fs::File,
-        io::{
-            Read,
-            Write,
-        },
-        path::PathBuf,
-        str::FromStr,
-    },
-    toml_edit::{
-        value,
-        DocumentMut,
-        Item,
-    },
+use anyhow::{anyhow, Context, Result};
+use clap::Parser;
+use solana_sdk::pubkey::Pubkey;
+use std::{
+    fs::File,
+    io::{Read, Write},
+    path::PathBuf,
+    str::FromStr,
 };
+use toml_edit::{value, DocumentMut, Item};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "1.x.x -> 2.0.0 pyth-agent config migrator")]

@@ -1,43 +1,21 @@
-use {
-    super::{
-        solana::oracle::PriceEntry,
-        store::{
-            global::{
-                AllAccountsData,
-                AllAccountsMetadata,
-                Lookup,
-                PriceAccountMetadata,
-            },
-            local::{
-                Message,
-                PriceInfo,
-            },
-        },
-    },
-    crate::agent::metrics::MetricsServer,
-    chrono::DateTime,
-    pyth_sdk::{
-        Identifier,
-        PriceIdentifier,
-    },
-    slog::Logger,
-    solana_sdk::pubkey::Pubkey,
-    std::{
-        collections::{
-            BTreeMap,
-            BTreeSet,
-            HashMap,
-            HashSet,
-        },
-        time::Duration,
-    },
-    tokio::sync::oneshot,
-    typed_html::{
-        dom::DOMTree,
-        html,
-        text,
+use super::{
+    solana::oracle::PriceEntry,
+    store::{
+        global::{AllAccountsData, AllAccountsMetadata, Lookup, PriceAccountMetadata},
+        local::{Message, PriceInfo},
     },
 };
+use crate::agent::metrics::MetricsServer;
+use chrono::DateTime;
+use pyth_sdk::{Identifier, PriceIdentifier};
+use slog::Logger;
+use solana_sdk::pubkey::Pubkey;
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    time::Duration,
+};
+use tokio::sync::oneshot;
+use typed_html::{dom::DOMTree, html, text};
 
 impl MetricsServer {
     /// Create an HTML view of store data
@@ -49,20 +27,20 @@ impl MetricsServer {
 
         // Request price data from local and global store
         self.local_store_tx
-            .send(Message::LookupAllPriceInfo {
+            .send_async(Message::LookupAllPriceInfo {
                 result_tx: local_tx,
             })
             .await?;
 
         self.global_store_lookup_tx
-            .send(Lookup::LookupAllAccountsData {
-                network:   super::solana::network::Network::Primary,
+            .send_async(Lookup::LookupAllAccountsData {
+                network: super::solana::network::Network::Primary,
                 result_tx: global_data_tx,
             })
             .await?;
 
         self.global_store_lookup_tx
-            .send(Lookup::LookupAllAccountsMetadata {
+            .send_async(Lookup::LookupAllAccountsMetadata {
                 result_tx: global_metadata_tx,
             })
             .await?;
@@ -167,13 +145,13 @@ table, th, td {
 #[derive(Debug)]
 pub struct DashboardSymbolView {
     product: Pubkey,
-    prices:  BTreeMap<Pubkey, DashboardPriceView>,
+    prices: BTreeMap<Pubkey, DashboardPriceView>,
 }
 
 #[derive(Debug)]
 pub struct DashboardPriceView {
-    local_data:       Option<PriceInfo>,
-    global_data:      Option<PriceEntry>,
+    local_data: Option<PriceInfo>,
+    global_data: Option<PriceEntry>,
     _global_metadata: Option<PriceAccountMetadata>,
 }
 
@@ -257,8 +235,8 @@ pub fn build_dashboard_data(
                 prices.insert(
                     price_key,
                     DashboardPriceView {
-                        local_data:       price_local_data,
-                        global_data:      price_global_data,
+                        local_data: price_local_data,
+                        global_data: price_global_data,
                         _global_metadata: price_global_metadata,
                     },
                 );

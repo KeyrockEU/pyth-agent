@@ -1,33 +1,10 @@
-use {
-    anyhow::{
-        anyhow,
-        Context,
-        Result,
-    },
-    clap::{
-        Parser,
-        ValueEnum,
-    },
-    pyth_agent::agent::{
-        config::Config,
-        Agent,
-    },
-    slog::{
-        debug,
-        error,
-        o,
-        Drain,
-        Logger,
-        PushFnValue,
-        Record,
-    },
-    slog_async::Async,
-    slog_envlogger::LogBuilder,
-    std::{
-        env,
-        path::PathBuf,
-    },
-};
+use anyhow::{anyhow, Context, Result};
+use clap::{Parser, ValueEnum};
+use pyth_agent::agent::{config::Config, Agent};
+use slog::{debug, error, o, Drain, Logger, PushFnValue, Record};
+use slog_async::Async;
+use slog_envlogger::LogBuilder;
+use std::{env, path::PathBuf};
 
 #[derive(Parser, Debug)]
 #[clap(author = "Pyth Data Association", version)]
@@ -35,7 +12,7 @@ use {
 struct Arguments {
     #[clap(short, long, default_value = "config/config.sample.pythtest.toml")]
     /// Path to configuration file
-    config:     PathBuf,
+    config: PathBuf,
     #[clap(short, long, default_value = "plain", value_enum)]
     /// Log flavor to use
     log_flavor: LogFlavor,

@@ -1,41 +1,20 @@
 //! Remote keypair loading endpoint. Lets you hotload a keypair in
 //! runtime for publishing to the given network.
 //!
-use {
-    anyhow::{
-        Context,
-        Result,
-    },
-    serde::Deserialize,
-    slog::Logger,
-    solana_client::nonblocking::rpc_client::RpcClient,
-    solana_sdk::{
-        commitment_config::CommitmentConfig,
-        signature::Keypair,
-        signer::Signer,
-    },
-    std::{
-        net::SocketAddr,
-        sync::Arc,
-        time::Duration,
-    },
-    tokio::{
-        sync::{
-            mpsc,
-            oneshot,
-            Mutex,
-        },
-        task::JoinHandle,
-    },
-    warp::{
-        hyper::StatusCode,
-        reply::{
-            self,
-            WithStatus,
-        },
-        Filter,
-        Rejection,
-    },
+use anyhow::{Context, Result};
+use serde::Deserialize;
+use slog::Logger;
+use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_sdk::{commitment_config::CommitmentConfig, signature::Keypair, signer::Signer};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
+use tokio::{
+    sync::{oneshot, Mutex},
+    task::JoinHandle,
+};
+use warp::{
+    hyper::StatusCode,
+    reply::{self, WithStatus},
+    Filter, Rejection,
 };
 
 pub fn default_min_keypair_balance_sol() -> u64 {
@@ -51,17 +30,17 @@ pub fn default_bind_address() -> SocketAddr {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    primary_min_keypair_balance_sol:   u64,
+    primary_min_keypair_balance_sol: u64,
     secondary_min_keypair_balance_sol: u64,
-    bind_address:                      SocketAddr,
+    bind_address: SocketAddr,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            primary_min_keypair_balance_sol:   default_min_keypair_balance_sol(),
+            primary_min_keypair_balance_sol: default_min_keypair_balance_sol(),
             secondary_min_keypair_balance_sol: default_min_keypair_balance_sol(),
-            bind_address:                      default_bind_address(),
+            bind_address: default_bind_address(),
         }
     }
 }
@@ -73,17 +52,17 @@ pub struct KeypairRequest {
 }
 
 pub struct RemoteKeypairLoader {
-    primary_current_keypair:   Option<Keypair>,
+    primary_current_keypair: Option<Keypair>,
     secondary_current_keypair: Option<Keypair>,
-    primary_rpc_url:           String,
-    secondary_rpc_url:         Option<String>,
-    config:                    Config,
+    primary_rpc_url: String,
+    secondary_rpc_url: Option<String>,
+    config: Config,
 }
 
 impl RemoteKeypairLoader {
     pub async fn spawn(
-        primary_requests_rx: mpsc::Receiver<KeypairRequest>,
-        secondary_requests_rx: mpsc::Receiver<KeypairRequest>,
+        primary_requests_rx: flume::Receiver<KeypairRequest>,
+        secondary_requests_rx: flume::Receiver<KeypairRequest>,
         primary_rpc_url: String,
         secondary_rpc_url: Option<String>,
         config: Config,
@@ -265,10 +244,10 @@ impl RemoteKeypairLoader {
     /// Get a keypair using the specified request
     /// sender. primary/secondary is decided by the channel the tx
     /// that request_tx comes from.
-    pub async fn request_keypair(request_tx: &mpsc::Sender<KeypairRequest>) -> Result<Keypair> {
+    pub async fn request_keypair(request_tx: &flume::Sender<KeypairRequest>) -> Result<Keypair> {
         let (tx, rx) = oneshot::channel();
 
-        request_tx.send(KeypairRequest { response_tx: tx }).await?;
+        request_tx.send_async(KeypairRequest { response_tx: tx }).await?;
 
         Ok(rx.await?)
     }
@@ -277,8 +256,8 @@ impl RemoteKeypairLoader {
 /// Query channel receivers indefinitely, sending back the requested
 /// keypair if available.
 async fn handle_key_requests(
-    mut primary_rx: mpsc::Receiver<KeypairRequest>,
-    mut secondary_rx: mpsc::Receiver<KeypairRequest>,
+    primary_rx: flume::Receiver<KeypairRequest>,
+    secondary_rx: flume::Receiver<KeypairRequest>,
     shared_state: Arc<Mutex<RemoteKeypairLoader>>,
     logger: Logger,
 ) {

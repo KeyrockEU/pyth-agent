@@ -1,53 +1,25 @@
-use {
-    super::store::{
-        global::Lookup,
-        local::Message,
-    },
-    crate::agent::{
-        solana::oracle::PriceEntry,
-        store::{
-            local::PriceInfo,
-            PriceIdentifier,
-        },
-    },
-    lazy_static::lazy_static,
-    prometheus_client::{
-        encoding::{
-            text::encode,
-            EncodeLabelSet,
-        },
-        metrics::{
-            counter::Counter,
-            family::Family,
-            gauge::Gauge,
-        },
-        registry::Registry,
-    },
-    serde::Deserialize,
-    slog::Logger,
-    solana_sdk::pubkey::Pubkey,
-    std::{
-        net::SocketAddr,
-        sync::{
-            atomic::AtomicU64,
-            Arc,
-        },
-        time::Instant,
-    },
-    tokio::sync::{
-        mpsc,
-        Mutex,
-    },
-    warp::{
-        hyper::StatusCode,
-        reply::{
-            self,
-        },
-        Filter,
-        Rejection,
-        Reply,
-    },
+use super::store::{global::Lookup, local::Message};
+use crate::agent::{
+    solana::oracle::PriceEntry,
+    store::{local::PriceInfo, PriceIdentifier},
 };
+use lazy_static::lazy_static;
+use prometheus_client::{
+    encoding::{text::encode, EncodeLabelSet},
+    metrics::{counter::Counter, family::Family, gauge::Gauge},
+    registry::Registry,
+};
+use serde::Deserialize;
+use slog::Logger;
+use solana_sdk::pubkey::Pubkey;
+use std::{
+    borrow::BorrowMut,
+    net::SocketAddr,
+    sync::{atomic::AtomicU64, Arc},
+    time::Instant,
+};
+use tokio::sync::Mutex;
+use warp::{hyper::StatusCode, reply, Filter, Rejection, Reply};
 
 pub fn default_bind_address() -> SocketAddr {
     "127.0.0.1:8888".parse().unwrap()
@@ -76,18 +48,18 @@ lazy_static! {
 /// dashboard and metrics.
 pub struct MetricsServer {
     /// Used to pull the state of all symbols in local store
-    pub local_store_tx:         mpsc::Sender<Message>,
-    pub global_store_lookup_tx: mpsc::Sender<Lookup>,
-    pub start_time:             Instant,
-    pub logger:                 Logger,
+    pub local_store_tx: flume::Sender<Message>,
+    pub global_store_lookup_tx: flume::Sender<Lookup>,
+    pub start_time: Instant,
+    pub logger: Logger,
 }
 
 impl MetricsServer {
     /// Instantiate a metrics API with a dashboard
     pub async fn spawn(
         addr: impl Into<SocketAddr> + 'static,
-        local_store_tx: mpsc::Sender<Message>,
-        global_store_lookup_tx: mpsc::Sender<Lookup>,
+        local_store_tx: flume::Sender<Message>,
+        global_store_lookup_tx: flume::Sender<Lookup>,
         logger: Logger,
     ) {
         let server = MetricsServer {
@@ -131,17 +103,14 @@ impl MetricsServer {
                 async move {
 		    let locked_state = shared_state.lock().await;
                     let mut buf = String::new();
-                    let response = encode(&mut buf, &&PROMETHEUS_REGISTRY.lock().await).map_err(|e| -> Box<dyn std::error::Error> {e.into()
-		    }).and_then(|_| -> Result<_, Box<dyn std::error::Error>> {
-
-			Ok(Box::new(reply::with_status(buf, StatusCode::OK)))
-		    }).unwrap_or_else(|e| {
+                    let response = encode(&mut buf, PROMETHEUS_REGISTRY.lock().await.borrow_mut()).map_err(|e| -> Box<dyn std::error::Error> {e.into()
+		    }).map(|_| -> Result<_, Box<dyn std::error::Error>> { Ok(Box::new(reply::with_status(buf, StatusCode::OK))) }).unwrap_or_else(|e| {
 			error!(locked_state.logger, "Metrics: Could not gather metrics from registry"; "error" => e.to_string());
 
-			Box::new(reply::with_status("Could not gather metrics. See logs for details".to_string(), StatusCode::INTERNAL_SERVER_ERROR))
+			Ok(Box::new(reply::with_status("Could not gather metrics. See logs for details".to_string(), StatusCode::INTERNAL_SERVER_ERROR)))
 		    });
 
-		    Result::<Box<dyn Reply>, Rejection>::Ok(response)
+		    Result::<Box<dyn Reply>, Rejection>::Ok(response.unwrap())
                 }
             });
 
@@ -211,12 +180,12 @@ pub struct PriceGlobalMetrics {
 
     /// f64 is used to get u64 support. Official docs:
     /// https://docs.rs/prometheus-client/latest/prometheus_client/metrics/gauge/struct.Gauge.html#using-atomicu64-as-storage-and-f64-on-the-interface
-    conf:      Family<PriceGlobalLabels, Gauge<f64, AtomicU64>>,
+    conf: Family<PriceGlobalLabels, Gauge<f64, AtomicU64>>,
     timestamp: Family<PriceGlobalLabels, Gauge>,
 
     /// Note: the exponent is not applied to this metric
-    prev_price:     Family<PriceGlobalLabels, Gauge>,
-    prev_conf:      Family<PriceGlobalLabels, Gauge<f64, AtomicU64>>,
+    prev_price: Family<PriceGlobalLabels, Gauge>,
+    prev_conf: Family<PriceGlobalLabels, Gauge<f64, AtomicU64>>,
     prev_timestamp: Family<PriceGlobalLabels, Gauge>,
 
     /// How many times this Price was updated in the global store
@@ -359,10 +328,10 @@ pub struct PriceLocalLabels {
 /// Metrics exposed to Prometheus by the local store for each price
 #[derive(Default)]
 pub struct PriceLocalMetrics {
-    price:     Family<PriceLocalLabels, Gauge>,
+    price: Family<PriceLocalLabels, Gauge>,
     /// f64 is used to get u64 support. Official docs:
     /// https://docs.rs/prometheus-client/latest/prometheus_client/metrics/gauge/struct.Gauge.html#using-atomicu64-as-storage-and-f64-on-the-interface
-    conf:      Family<PriceLocalLabels, Gauge<f64, AtomicU64>>,
+    conf: Family<PriceLocalLabels, Gauge<f64, AtomicU64>>,
     timestamp: Family<PriceLocalLabels, Gauge>,
 
     /// How many times this price was updated in the local store

@@ -2,39 +2,20 @@ use std::collections::HashSet;
 // The Global Store stores a copy of all the product and price information held in the Pyth
 // on-chain aggregation contracts, across both the primary and secondary networks.
 // This enables this data to be easily queried by other components.
-use {
-    super::super::solana::oracle::{
-        self,
-        PriceEntry,
-        ProductEntry,
-    },
-    crate::agent::{
-        metrics::{
-            PriceGlobalMetrics,
-            ProductGlobalMetrics,
-            PROMETHEUS_REGISTRY,
-        },
-        pythd::adapter,
-        solana::network::Network,
-    },
-    anyhow::{
-        anyhow,
-        Result,
-    },
-    pyth_sdk::Identifier,
-    slog::Logger,
-    solana_sdk::pubkey::Pubkey,
-    std::collections::{
-        BTreeMap,
-        HashMap,
-    },
-    tokio::{
-        sync::{
-            mpsc,
-            oneshot,
-        },
-        task::JoinHandle,
-    },
+use super::super::solana::oracle::{self, PriceEntry, ProductEntry};
+use crate::agent::{
+    metrics::{PriceGlobalMetrics, ProductGlobalMetrics, PROMETHEUS_REGISTRY},
+    pythd::adapter,
+    solana::network::Network,
+};
+use anyhow::{anyhow, Result};
+use pyth_sdk::Identifier;
+use slog::Logger;
+use solana_sdk::pubkey::Pubkey;
+use std::collections::{BTreeMap, HashMap};
+use tokio::{
+    sync::oneshot,
+    task::JoinHandle,
 };
 
 /// AllAccountsData contains the full data for the price and product accounts, sourced
@@ -42,7 +23,7 @@ use {
 #[derive(Debug, Clone, Default)]
 pub struct AllAccountsData {
     pub product_accounts: HashMap<Pubkey, oracle::ProductEntry>,
-    pub price_accounts:   HashMap<Pubkey, oracle::PriceEntry>,
+    pub price_accounts: HashMap<Pubkey, oracle::PriceEntry>,
 }
 
 /// AllAccountsMetadata contains the metadata for all the price and product accounts.
@@ -51,14 +32,14 @@ pub struct AllAccountsData {
 #[derive(Debug, Clone, Default)]
 pub struct AllAccountsMetadata {
     pub product_accounts_metadata: HashMap<Pubkey, ProductAccountMetadata>,
-    pub price_accounts_metadata:   HashMap<Pubkey, PriceAccountMetadata>,
+    pub price_accounts_metadata: HashMap<Pubkey, PriceAccountMetadata>,
 }
 
 /// ProductAccountMetadata contains the metadata for a product account.
 #[derive(Debug, Clone, Default)]
 pub struct ProductAccountMetadata {
     /// Attribute dictionary
-    pub attr_dict:      BTreeMap<String, String>,
+    pub attr_dict: BTreeMap<String, String>,
     /// Price accounts associated with this product
     pub price_accounts: Vec<Pubkey>,
 }
@@ -66,7 +47,7 @@ pub struct ProductAccountMetadata {
 impl From<oracle::ProductEntry> for ProductAccountMetadata {
     fn from(product_account: oracle::ProductEntry) -> Self {
         ProductAccountMetadata {
-            attr_dict:      product_account
+            attr_dict: product_account
                 .account_data
                 .iter()
                 .map(|(key, val)| (key.to_owned(), val.to_owned()))
@@ -95,11 +76,11 @@ impl From<oracle::PriceEntry> for PriceAccountMetadata {
 pub enum Update {
     ProductAccountUpdate {
         account_key: Pubkey,
-        account:     ProductEntry,
+        account: Box<ProductEntry>,
     },
     PriceAccountUpdate {
         account_key: Pubkey,
-        account:     PriceEntry,
+        account: Box<PriceEntry>,
     },
 }
 
@@ -109,11 +90,11 @@ pub enum Lookup {
         result_tx: oneshot::Sender<Result<AllAccountsMetadata>>,
     },
     LookupAllAccountsData {
-        network:   Network,
+        network: Network,
         result_tx: oneshot::Sender<Result<AllAccountsData>>,
     },
     LookupPriceAccounts {
-        network:   Network,
+        network: Network,
         price_ids: HashSet<Pubkey>,
         result_tx: oneshot::Sender<Result<HashMap<Pubkey, PriceEntry>>>,
     },
@@ -139,25 +120,25 @@ pub struct Store {
     price_metrics: PriceGlobalMetrics,
 
     /// Channel on which lookup requests are received
-    lookup_rx: mpsc::Receiver<Lookup>,
+    lookup_rx: flume::Receiver<Lookup>,
 
     /// Channel on which account updates are received from the primary network
-    primary_updates_rx: mpsc::Receiver<Update>,
+    primary_updates_rx: flume::Receiver<Update>,
 
     /// Channel on which account updates are received from the secondary network
-    secondary_updates_rx: mpsc::Receiver<Update>,
+    secondary_updates_rx: flume::Receiver<Update>,
 
     /// Channel on which to communicate with the pythd API adapter
-    pythd_adapter_tx: mpsc::Sender<adapter::Message>,
+    pythd_adapter_tx: flume::Sender<adapter::Message>,
 
     logger: Logger,
 }
 
 pub fn spawn_store(
-    lookup_rx: mpsc::Receiver<Lookup>,
-    primary_updates_rx: mpsc::Receiver<Update>,
-    secondary_updates_rx: mpsc::Receiver<Update>,
-    pythd_adapter_tx: mpsc::Sender<adapter::Message>,
+    lookup_rx: flume::Receiver<Lookup>,
+    primary_updates_rx: flume::Receiver<Update>,
+    secondary_updates_rx: flume::Receiver<Update>,
+    pythd_adapter_tx: flume::Sender<adapter::Message>,
     logger: Logger,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -176,10 +157,10 @@ pub fn spawn_store(
 
 impl Store {
     pub async fn new(
-        lookup_rx: mpsc::Receiver<Lookup>,
-        primary_updates_rx: mpsc::Receiver<Update>,
-        secondary_updates_rx: mpsc::Receiver<Update>,
-        pythd_adapter_tx: mpsc::Sender<adapter::Message>,
+        lookup_rx: flume::Receiver<Lookup>,
+        primary_updates_rx: flume::Receiver<Update>,
+        secondary_updates_rx: flume::Receiver<Update>,
+        pythd_adapter_tx: flume::Sender<adapter::Message>,
         logger: Logger,
     ) -> Self {
         let prom_registry_ref = &mut &mut PROMETHEUS_REGISTRY.lock().await;
@@ -209,15 +190,15 @@ impl Store {
 
     async fn handle_next(&mut self) -> Result<()> {
         tokio::select! {
-            Some(update) = self.primary_updates_rx.recv() => {
+            Ok(update) = self.primary_updates_rx.recv_async() => {
                 self.update_data(Network::Primary, &update).await?;
                 self.update_metadata(&update)?;
             }
-            Some(update) = self.secondary_updates_rx.recv() => {
+            Ok(update) = self.secondary_updates_rx.recv_async() => {
                 self.update_data(Network::Secondary, &update).await?;
                 self.update_metadata(&update)?;
             }
-            Some(lookup) = self.lookup_rx.recv() => {
+            Ok(lookup) = self.lookup_rx.recv_async() => {
                 self.handle_lookup(lookup).await?
             }
         };
@@ -237,7 +218,7 @@ impl Store {
                 account_key,
                 account,
             } => {
-                let attr_dict = ProductAccountMetadata::from(account.clone()).attr_dict;
+                let attr_dict = ProductAccountMetadata::from(*account.clone()).attr_dict;
 
                 let maybe_symbol = attr_dict.get("symbol").cloned();
 
@@ -246,7 +227,7 @@ impl Store {
                 // Update the stored data
                 account_data
                     .product_accounts
-                    .insert(*account_key, account.clone());
+                    .insert(*account_key, *account.clone());
             }
             Update::PriceAccountUpdate {
                 account_key,
@@ -271,20 +252,20 @@ impl Store {
                 self.price_metrics.update(account_key, account);
 
                 // Update the stored data
-                account_data.price_accounts.insert(*account_key, *account);
+                account_data.price_accounts.insert(*account_key, **account);
 
                 // Notify the Pythd API adapter that this account has changed.
                 // As the account data might differ between the two networks
                 // we only notify the adapter of the primary network updates.
                 if let Network::Primary = network {
                     self.pythd_adapter_tx
-                        .send(adapter::Message::GlobalStoreUpdate {
+                        .send_async(adapter::Message::GlobalStoreUpdate {
                             price_identifier: Identifier::new(account_key.to_bytes()),
-                            price:            account.agg.price,
-                            conf:             account.agg.conf,
-                            status:           account.agg.status,
-                            valid_slot:       account.valid_slot,
-                            pub_slot:         account.agg.pub_slot,
+                            price: account.agg.price,
+                            conf: account.agg.conf,
+                            status: account.agg.status,
+                            valid_slot: account.valid_slot,
+                            pub_slot: account.agg.pub_slot,
                         })
                         .await
                         .map_err(|_| anyhow!("failed to notify pythd adapter of account update"))?;
@@ -303,7 +284,7 @@ impl Store {
             } => {
                 self.account_metadata
                     .product_accounts_metadata
-                    .insert(*account_key, account.clone().into());
+                    .insert(*account_key, (*(*account).clone()).into());
 
                 Ok(())
             }
@@ -313,7 +294,7 @@ impl Store {
             } => {
                 self.account_metadata
                     .price_accounts_metadata
-                    .insert(*account_key, (*account).into());
+                    .insert(*account_key, (**account).into());
 
                 Ok(())
             }

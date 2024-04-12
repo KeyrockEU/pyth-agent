@@ -1,35 +1,24 @@
 // The Local Store stores a copy of all the price information this local publisher
 // is contributing to the network. The Exporters will then take this data and publish
 // it to the networks.
-use {
-    super::PriceIdentifier,
-    crate::agent::metrics::{
-        PriceLocalMetrics,
-        PROMETHEUS_REGISTRY,
-    },
-    anyhow::{
-        anyhow,
-        Result,
-    },
-    pyth_sdk::UnixTimestamp,
-    pyth_sdk_solana::state::PriceStatus,
-    slog::Logger,
-    solana_sdk::bs58,
-    std::collections::HashMap,
-    tokio::{
-        sync::{
-            mpsc,
-            oneshot,
-        },
-        task::JoinHandle,
-    },
+use super::PriceIdentifier;
+use crate::agent::metrics::{PriceLocalMetrics, PROMETHEUS_REGISTRY};
+use anyhow::{anyhow, Result};
+use pyth_sdk::UnixTimestamp;
+use pyth_sdk_solana::state::PriceStatus;
+use slog::Logger;
+use solana_sdk::bs58;
+use std::{borrow::BorrowMut, collections::HashMap};
+use tokio::{
+    sync::oneshot,
+    task::JoinHandle,
 };
 
 #[derive(Clone, Debug)]
 pub struct PriceInfo {
-    pub status:    PriceStatus,
-    pub price:     i64,
-    pub conf:      u64,
+    pub status: PriceStatus,
+    pub price: i64,
+    pub conf: u64,
     pub timestamp: UnixTimestamp,
 }
 
@@ -53,36 +42,36 @@ impl PriceInfo {
 pub enum Message {
     Update {
         price_identifier: PriceIdentifier,
-        price_info:       PriceInfo,
+        price_info: PriceInfo,
     },
     LookupAllPriceInfo {
         result_tx: oneshot::Sender<HashMap<PriceIdentifier, PriceInfo>>,
     },
 }
 
-pub fn spawn_store(rx: mpsc::Receiver<Message>, logger: Logger) -> JoinHandle<()> {
+pub fn spawn_store(rx: flume::Receiver<Message>, logger: Logger) -> JoinHandle<()> {
     tokio::spawn(async move { Store::new(rx, logger).await.run().await })
 }
 
 pub struct Store {
-    prices:  HashMap<PriceIdentifier, PriceInfo>,
+    prices: HashMap<PriceIdentifier, PriceInfo>,
     metrics: PriceLocalMetrics,
-    rx:      mpsc::Receiver<Message>,
-    logger:  Logger,
+    rx: flume::Receiver<Message>,
+    logger: Logger,
 }
 
 impl Store {
-    pub async fn new(rx: mpsc::Receiver<Message>, logger: Logger) -> Self {
+    pub async fn new(rx: flume::Receiver<Message>, logger: Logger) -> Self {
         Store {
             prices: HashMap::new(),
-            metrics: PriceLocalMetrics::new(&mut &mut PROMETHEUS_REGISTRY.lock().await),
+            metrics: PriceLocalMetrics::new(PROMETHEUS_REGISTRY.lock().await.borrow_mut()),
             rx,
             logger,
         }
     }
 
     pub async fn run(&mut self) {
-        while let Some(message) = self.rx.recv().await {
+        while let Ok(message) = self.rx.recv_async().await {
             if let Err(err) = self.handle(message) {
                 error!(self.logger, "{}", err);
                 debug!(self.logger, "error context"; "context" => format!("{:?}", err));

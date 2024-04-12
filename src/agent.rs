@@ -69,20 +69,10 @@ pub mod pythd;
 pub mod remote_keypair_loader;
 pub mod solana;
 pub mod store;
-use {
-    self::{
-        config::Config,
-        pythd::api::rpc,
-        solana::network,
-    },
-    anyhow::Result,
-    futures_util::future::join_all,
-    slog::Logger,
-    tokio::sync::{
-        broadcast,
-        mpsc,
-    },
-};
+use self::{config::Config, pythd::api::rpc, solana::network};
+use anyhow::Result;
+use futures_util::future::join_all;
+use slog::Logger;
 
 pub struct Agent {
     config: Config,
@@ -113,19 +103,19 @@ impl Agent {
         // Create the channels
         // TODO: make all components listen to shutdown signal
         let (shutdown_tx, shutdown_rx) =
-            broadcast::channel(self.config.channel_capacities.shutdown);
+            flume::bounded(self.config.channel_capacities.shutdown);
         let (primary_oracle_updates_tx, primary_oracle_updates_rx) =
-            mpsc::channel(self.config.channel_capacities.primary_oracle_updates);
+            flume::bounded(self.config.channel_capacities.primary_oracle_updates);
         let (secondary_oracle_updates_tx, secondary_oracle_updates_rx) =
-            mpsc::channel(self.config.channel_capacities.secondary_oracle_updates);
+            flume::bounded(self.config.channel_capacities.secondary_oracle_updates);
         let (global_store_lookup_tx, global_store_lookup_rx) =
-            mpsc::channel(self.config.channel_capacities.global_store_lookup);
+            flume::bounded(self.config.channel_capacities.global_store_lookup);
         let (local_store_tx, local_store_rx) =
-            mpsc::channel(self.config.channel_capacities.local_store);
+            flume::bounded(self.config.channel_capacities.local_store);
         let (pythd_adapter_tx, pythd_adapter_rx) =
-            mpsc::channel(self.config.channel_capacities.pythd_adapter);
-        let (primary_keypair_loader_tx, primary_keypair_loader_rx) = mpsc::channel(10);
-        let (secondary_keypair_loader_tx, secondary_keypair_loader_rx) = mpsc::channel(10);
+            flume::bounded(self.config.channel_capacities.pythd_adapter);
+        let (primary_keypair_loader_tx, primary_keypair_loader_rx) = flume::bounded(10);
+        let (secondary_keypair_loader_tx, secondary_keypair_loader_rx) = flume::bounded(10);
 
         // Spawn the primary network
         jhs.extend(network::spawn_network(
@@ -169,7 +159,7 @@ impl Agent {
             pythd_adapter_rx,
             global_store_lookup_tx.clone(),
             local_store_tx.clone(),
-            shutdown_tx.subscribe(),
+            shutdown_rx.clone(),
             logger.clone(),
         ));
 
@@ -177,7 +167,7 @@ impl Agent {
         jhs.push(rpc::spawn_server(
             self.config.pythd_api_server.clone(),
             pythd_adapter_tx,
-            shutdown_rx,
+            shutdown_rx.clone(),
             logger.clone(),
         ));
 
@@ -213,36 +203,26 @@ impl Agent {
 }
 
 pub mod config {
-    use {
-        super::{
-            metrics,
-            pythd,
-            remote_keypair_loader,
-            solana::network,
-        },
-        anyhow::Result,
-        config as config_rs,
-        config_rs::{
-            Environment,
-            File,
-        },
-        serde::Deserialize,
-        std::path::Path,
-    };
+    use super::{metrics, pythd, remote_keypair_loader, solana::network};
+    use anyhow::Result;
+    use config as config_rs;
+    use config_rs::{Environment, File};
+    use serde::Deserialize;
+    use std::path::Path;
 
     /// Configuration for all components of the Agent
     #[derive(Deserialize, Debug)]
     pub struct Config {
         #[serde(default)]
-        pub channel_capacities:    ChannelCapacities,
-        pub primary_network:       network::Config,
-        pub secondary_network:     Option<network::Config>,
+        pub channel_capacities: ChannelCapacities,
+        pub primary_network: network::Config,
+        pub secondary_network: Option<network::Config>,
         #[serde(default)]
-        pub pythd_adapter:         pythd::adapter::Config,
+        pub pythd_adapter: pythd::adapter::Config,
         #[serde(default)]
-        pub pythd_api_server:      pythd::api::rpc::Config,
+        pub pythd_api_server: pythd::api::rpc::Config,
         #[serde(default)]
-        pub metrics_server:        metrics::Config,
+        pub metrics_server: metrics::Config,
         #[serde(default)]
         pub remote_keypair_loader: remote_keypair_loader::Config,
     }
@@ -265,34 +245,34 @@ pub mod config {
     #[derive(Deserialize, Debug)]
     pub struct ChannelCapacities {
         /// Capacity of the channel used to broadcast shutdown events to all components
-        pub shutdown:                 usize,
+        pub shutdown: usize,
         /// Capacity of the channel used to send updates from the primary Oracle to the Global Store
-        pub primary_oracle_updates:   usize,
+        pub primary_oracle_updates: usize,
         /// Capacity of the channel used to send updates from the secondary Oracle to the Global Store
         pub secondary_oracle_updates: usize,
         /// Capacity of the channel the Pythd API Adapter uses to send lookup requests to the Global Store
-        pub global_store_lookup:      usize,
+        pub global_store_lookup: usize,
         /// Capacity of the channel the Pythd API Adapter uses to communicate with the Local Store
-        pub local_store_lookup:       usize,
+        pub local_store_lookup: usize,
         /// Capacity of the channel on which the Local Store receives messages
-        pub local_store:              usize,
+        pub local_store: usize,
         /// Capacity of the channel on which the Pythd API Adapter receives messages
-        pub pythd_adapter:            usize,
+        pub pythd_adapter: usize,
         /// Capacity of the slog logging channel. Adjust this value if you see complaints about channel capacity from slog
-        pub logger_buffer:            usize,
+        pub logger_buffer: usize,
     }
 
     impl Default for ChannelCapacities {
         fn default() -> Self {
             Self {
-                shutdown:                 10000,
-                primary_oracle_updates:   10000,
+                shutdown: 10000,
+                primary_oracle_updates: 10000,
                 secondary_oracle_updates: 10000,
-                global_store_lookup:      10000,
-                local_store_lookup:       10000,
-                local_store:              10000,
-                pythd_adapter:            10000,
-                logger_buffer:            10000,
+                global_store_lookup: 10000,
+                local_store_lookup: 10000,
+                local_store: 10000,
+                pythd_adapter: 10000,
+                logger_buffer: 10000,
             }
         }
     }
